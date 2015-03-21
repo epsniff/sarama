@@ -324,3 +324,34 @@ func TestClientRefreshBehaviour(t *testing.T) {
 	seedBroker.Close()
 	safeClose(t, client)
 }
+
+func TestClientGetOffsetRange(t *testing.T) {
+	seedBroker := newMockBroker(t, 1)
+	leader := newMockBroker(t, 2)
+
+	metadataResponse := new(MetadataResponse)
+	metadataResponse.AddBroker(leader.Addr(), leader.BrokerID())
+	metadataResponse.AddTopicPartition("my_topic", 0, leader.BrokerID(), nil, nil, ErrNoError)
+	seedBroker.Returns(metadataResponse)
+
+	client, err := NewClient([]string{seedBroker.Addr()}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	offsetResponse := new(OffsetResponse)
+	offsetResponse.AddTopicPartition("my_topic", 0, 2345)
+	offsetResponse.AddTopicPartition("my_topic", 0, 155)
+	leader.Returns(offsetResponse)
+
+	oldest, newest, err := client.GetOffsetRange("my_topic", 0)
+	if err != nil {
+		t.Error(err)
+	} else if oldest != 155 || newest != 2345 {
+		t.Errorf("Expected oldest 155 and newest 2345, got %d and %d", oldest, newest)
+	}
+
+	safeClose(t, client)
+	leader.Close()
+	seedBroker.Close()
+}

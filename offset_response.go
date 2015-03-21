@@ -126,5 +126,12 @@ func (r *OffsetResponse) AddTopicPartition(topic string, partition int32, offset
 		byTopic = make(map[int32]*OffsetResponseBlock)
 		r.Blocks[topic] = byTopic
 	}
-	byTopic[partition] = &OffsetResponseBlock{Offsets: []int64{offset}}
+
+	byPartition, ok := byTopic[partition]
+	if !ok {
+		byPartition = &OffsetResponseBlock{Offsets: make([]int64, 0, 1)}
+		byTopic[partition] = byPartition
+	}
+
+	byPartition.Offsets = append(byPartition.Offsets, offset)
 }

@@ -12,7 +12,7 @@ func (r *offsetRequestBlock) encode(pe packetEncoder) error {
 }
 
 type OffsetRequest struct {
-	blocks map[string]map[int32]*offsetRequestBlock
+	blocks map[string]map[int32][]*offsetRequestBlock
 }
 
 func (r *OffsetRequest) encode(pe packetEncoder) error {
@@ -30,11 +30,13 @@ func (r *OffsetRequest) encode(pe packetEncoder) error {
 		if err != nil {
 			return err
 		}
-		for partition, block := range partitions {
+		for partition, blocks := range partitions {
 			pe.putInt32(partition)
-			err = block.encode(pe)
-			if err != nil {
-				return err
+			for _, block := range blocks {
+				err = block.encode(pe)
+				if err != nil {
+					return err
+				}
 			}
 		}
 	}
@@ -51,16 +53,20 @@ func (r *OffsetRequest) version() int16 {
 
 func (r *OffsetRequest) AddBlock(topic string, partitionID int32, time int64, maxOffsets int32) {
 	if r.blocks == nil {
-		r.blocks = make(map[string]map[int32]*offsetRequestBlock)
+		r.blocks = make(map[string]map[int32][]*offsetRequestBlock)
 	}
 
 	if r.blocks[topic] == nil {
-		r.blocks[topic] = make(map[int32]*offsetRequestBlock)
+		r.blocks[topic] = make(map[int32][]*offsetRequestBlock)
+	}
+
+	if r.blocks[topic][partitionID] == nil {
+		r.blocks[topic][partitionID] = make([]*offsetRequestBlock, 0, 1)
 	}
 
 	tmp := new(offsetRequestBlock)
 	tmp.time = time
 	tmp.maxOffsets = maxOffsets
 
-	r.blocks[topic][partitionID] = tmp
+	r.blocks[topic][partitionID] = append(r.blocks[topic][partitionID], tmp)
 }

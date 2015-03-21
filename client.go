@@ -42,6 +42,11 @@ type Client interface {
 	// offset, OffsetNewest for the offset of the message that will be produced next, or a time.
 	GetOffset(topic string, partitionID int32, time int64) (int64, error)
 
+	// GetOffsetRange queries the cluster to get the range of available offsets for a given
+	// topic/partition. When consuming, you can only request to start within this range, otherwise
+	// the fetch request will return ErrOffsetOutOfRange.
+	GetOffsetRange(topic string, partitionID int32) (int64, int64, error)
+
 	// Close shuts down all broker connections managed by this client. It is required to call this function before
 	// a client object passes out of scope, as it will otherwise leak memory. You must close any Producers or Consumers
 	// using a client before you close the client.
@@ -290,6 +295,36 @@ func (client *client) RefreshMetadata(topics ...string) error {
 	}
 
 	return client.tryRefreshMetadata(topics, client.conf.Metadata.Retry.Max)
+}
+
+func (client *client) GetOffsetRange(topic string, partitionID int32) (int64, int64, error) {
+	broker, err := client.Leader(topic, partitionID)
+	if err != nil {
+		return -1, -1, err
+	}
+
+	request := &OffsetRequest{}
+	request.AddBlock(topic, partitionID, OffsetNewest, 2)
+	request.AddBlock(topic, partitionID, OffsetOldest, 2)
+
+	response, err := broker.GetAvailableOffsets(request)
+	if err != nil {
+		return -1, -1, err
+	}
+
+	block := response.GetBlock(topic, partitionID)
+
+	if block == nil {
+		return -1, -1, ErrIncompleteResponse
+	}
+	if block.Err != ErrNoError {
+		return -1, -1, block.Err
+	}
+	if len(block.Offsets) != 2 {
+		return -1, -1, ErrIncompleteResponse
+	}
+
+	return block.Offsets[1], block.Offsets[0], nil
 }
 
 func (client *client) GetOffset(topic string, partitionID int32, time int64) (int64, error) {

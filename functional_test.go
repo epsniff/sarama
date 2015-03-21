@@ -171,7 +171,30 @@ func TestFuncMultiPartitionProduce(t *testing.T) {
 	}
 }
 
-func TestProducingToInvalidTopic(t *testing.T) {
+func TestFuncClientGetOffsetRange(t *testing.T) {
+	checkKafkaAvailability(t)
+
+	c, err := NewClient(kafkaBrokers, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, _, err := c.GetOffsetRange("nonexisting", 1); err != ErrUnknownTopicOrPartition {
+		t.Error("Expected ErrUnknownTopicOrPartition, got", err)
+	}
+
+	oldest, newest, err := c.GetOffsetRange("many_partitions", 1)
+	if err != nil {
+		t.Error("Expected no error, got", err)
+	}
+	if oldest >= newest {
+		t.Errorf("The oldest available offset (%d) should be smaller than the newest (%d)", oldest, newest)
+	}
+
+	safeClose(t, c)
+}
+
+func TestFuncProducingToInvalidTopic(t *testing.T) {
 	checkKafkaAvailability(t)
 
 	producer, err := NewSyncProducer(kafkaBrokers, nil)
