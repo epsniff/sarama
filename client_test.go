@@ -351,6 +351,17 @@ func TestClientGetOffsetRange(t *testing.T) {
 		t.Errorf("Expected oldest 155 and newest 2345, got %d and %d", oldest, newest)
 	}
 
+	noMessagesOffsetResponse := new(OffsetResponse)
+	noMessagesOffsetResponse.AddTopicPartition("my_topic", 0, 2345)
+	leader.Returns(noMessagesOffsetResponse)
+
+	oldest, newest, err = client.GetOffsetRange("my_topic", 0)
+	if err != nil {
+		t.Error(err)
+	} else if oldest != 2345 || newest != 2345 {
+		t.Errorf("Expected oldest and newest to be 2345, got %d and %d", oldest, newest)
+	}
+
 	safeClose(t, client)
 	leader.Close()
 	seedBroker.Close()

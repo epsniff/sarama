@@ -39,7 +39,7 @@ func init() {
 
 	kafkaShouldBeAvailable = os.Getenv("CI") != ""
 
-	if os.Getenv("DEBUG") == "true" {
+	if os.Getenv("LOGGER") == "true" {
 		Logger = log.New(os.Stdout, "[sarama] ", log.LstdFlags)
 	}
 }
@@ -199,12 +199,30 @@ func TestFuncClientGetOffsetRange(t *testing.T) {
 		t.Error("Expected ErrUnknownTopicOrPartition, got", err)
 	}
 
-	oldest, newest, err := c.GetOffsetRange("many_partitions", 1)
+	oldest, newest, err := c.GetOffsetRange("single_partition", 0)
 	if err != nil {
 		t.Error("Expected no error, got", err)
 	}
-	if oldest >= newest {
-		t.Errorf("The oldest available offset (%d) should be smaller than the newest (%d)", oldest, newest)
+	if oldest > newest {
+		t.Errorf("The oldest available offset (%d) should not be greater than the newest (%d)", oldest, newest)
+	}
+
+	o, err := c.GetOffset("single_partition", 0, OffsetOldest)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if oldest != o {
+		t.Errorf("The oldest offset (%d) is not equal to the beginning of the range (%d)", o, oldest)
+	}
+
+	n, err := c.GetOffset("single_partition", 0, OffsetNewest)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if newest != n {
+		t.Errorf("The newest offset (%d) is not equal to the end of the range (%d)", n, newest)
 	}
 
 	safeClose(t, c)

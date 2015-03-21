@@ -320,11 +320,17 @@ func (client *client) GetOffsetRange(topic string, partitionID int32) (int64, in
 	if block.Err != ErrNoError {
 		return -1, -1, block.Err
 	}
-	if len(block.Offsets) != 2 {
+
+	if len(block.Offsets) == 1 {
+		// No messages in this partition (anymore), so oldest and newest are the same
+		return block.Offsets[0], block.Offsets[0], nil
+	} else if len(block.Offsets) == 2 {
+		// The first offset is the log head, the second one is the first available.
+		return block.Offsets[1], block.Offsets[0], nil
+	} else {
+		Logger.Printf("Incomplete GetOffsetRange response: %+v\n", block.Offsets)
 		return -1, -1, ErrIncompleteResponse
 	}
-
-	return block.Offsets[1], block.Offsets[0], nil
 }
 
 func (client *client) GetOffset(topic string, partitionID int32, time int64) (int64, error) {
