@@ -1,6 +1,7 @@
 package sarama
 
 import (
+	"fmt"
 	"sort"
 	"sync"
 	"time"
@@ -381,8 +382,15 @@ func (client *client) getOffsetLeader(consumerGroup string, attemptsRemaining in
 
 	switch response.Err {
 	case ErrNoError:
-		// TODO: register new brokers
 		broker := client.brokers[response.CoordinatorID]
+		if broker == nil {
+			client.brokers[response.CoordinatorID] = &Broker{
+				id:   response.CoordinatorID,
+				addr: fmt.Sprintf("%s:%d", response.CoordinatorHost, response.CoordinatorPort),
+			}
+
+			broker = client.brokers[response.CoordinatorID]
+		}
 		_ = broker.Open(client.conf)
 		return broker, nil
 
