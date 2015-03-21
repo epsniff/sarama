@@ -366,7 +366,7 @@ RetryCommitHandler:
 		delete(client.coordinators, consumerGroup)
 		client.coordinatorLock.Unlock()
 
-		time.Sleep(1 * time.Second)
+		time.Sleep(100 * time.Millisecond)
 		return client.tryCommitOffset(consumerGroup, topic, partitionID, offset, metadata, attemptsRemaining-1)
 	} else {
 		return err
@@ -418,7 +418,7 @@ RetryFetchHandler:
 		delete(client.coordinators, consumerGroup)
 		client.coordinatorLock.Unlock()
 
-		time.Sleep(1 * time.Second)
+		time.Sleep(100 * time.Millisecond)
 		return client.tryFetchOffset(consumerGroup, topic, partitionID, attemptsRemaining-1)
 	} else {
 		return -1, "", err
@@ -435,7 +435,7 @@ func (client *client) Coordinator(consumerGroup string) (*Broker, error) {
 		return coordinator, nil
 	}
 
-	coordinator, err := client.getCoordinator(consumerGroup, client.conf.Metadata.Retry.Max)
+	coordinator, err := client.getCoordinator(consumerGroup, 10)
 	if err != nil {
 		return nil, err
 	}
