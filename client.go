@@ -73,13 +73,16 @@ type client struct {
 	seedBrokers []*Broker
 	deadSeeds   []*Broker
 
-	brokers  map[int32]*Broker                       // maps broker ids to brokers
-	metadata map[string]map[int32]*PartitionMetadata // maps topics to partition ids to metadata
+	brokers      map[int32]*Broker                       // maps broker ids to brokers
+	metadata     map[string]map[int32]*PartitionMetadata // maps topics to partition ids to metadata
+	coordinators map[string]*Broker                      // maps consumer groups to brokers
 
 	// If the number of partitions is large, we can get some churn calling cachedPartitions,
 	// so the result is cached.  It is important to update this value whenever metadata is changed
 	cachedPartitionsResults map[string][maxPartitionIndex][]int32
-	lock                    sync.RWMutex // protects access to the maps, only one since they're always written together
+
+	metadataLock    sync.RWMutex // protects access to the metadata maps
+	coordinatorLock sync.RWMutex // protects access to the coordinator maps
 }
 
 // NewClient creates a new Client. It connects to one of the given broker addresses
@@ -106,6 +109,7 @@ func NewClient(addrs []string, conf *Config) (Client, error) {
 		brokers:                 make(map[int32]*Broker),
 		metadata:                make(map[string]map[int32]*PartitionMetadata),
 		cachedPartitionsResults: make(map[string][maxPartitionIndex][]int32),
+		coordinators:            make(map[string]*Broker),
 	}
 	for _, addr := range addrs {
 		client.seedBrokers = append(client.seedBrokers, NewBroker(addr))
@@ -143,8 +147,8 @@ func (client *client) Close() error {
 		return ErrClosedClient
 	}
 
-	client.lock.Lock()
-	defer client.lock.Unlock()
+	client.metadataLock.Lock()
+	defer client.metadataLock.Unlock()
 	Logger.Println("Closing Client")
 
 	for _, broker := range client.brokers {
@@ -173,8 +177,8 @@ func (client *client) Topics() ([]string, error) {
 		return nil, ErrClosedClient
 	}
 
-	client.lock.RLock()
-	defer client.lock.RUnlock()
+	client.metadataLock.RLock()
+	defer client.metadataLock.RUnlock()
 
 	ret := make([]string, 0, len(client.metadata))
 	for topic := range client.metadata {
@@ -321,10 +325,18 @@ func (client *client) GetOffset(topic string, partitionID int32, time int64) (in
 }
 
 func (client *client) CommitOffset(consumerGroup string, topic string, partitionID int32, offset int64, metadata string) error {
-	broker, err := client.getOffsetLeader(consumerGroup, client.conf.Metadata.Retry.Max)
+	return client.tryCommitOffset(consumerGroup, topic, partitionID, offset, metadata, 5)
+}
+
+func (client *client) tryCommitOffset(consumerGroup string, topic string, partitionID int32, offset int64, metadata string, attemptsRemaining int) error {
+	var err error
+
+	broker, err := client.Coordinator(consumerGroup)
 	if err != nil {
 		return err
 	}
+
+	Logger.Println("Committing offset to coordinator %d (%s) ", broker.ID(), broker.Addr())
 
 	offsetCommitRequest := new(OffsetCommitRequest)
 	offsetCommitRequest.ConsumerGroup = consumerGroup
@@ -332,20 +344,43 @@ func (client *client) CommitOffset(consumerGroup string, topic string, partition
 
 	response, err := broker.CommitOffset(offsetCommitRequest)
 	if err != nil {
-		// TODO: retry?
+		_ = broker.Close()
+		client.disconnectBroker(broker)
+		goto RetryCommitHandler
+	}
+
+	err = response.Errors[topic][partitionID]
+	switch err {
+	case ErrNoError:
+		return nil
+	case ErrNotCoordinatorForConsumer:
+		goto RetryCommitHandler
+	default:
+		Logger.Println("Unexpected error for CommitOffset:", err)
 		return err
 	}
 
-	if err := response.Errors[topic][partitionID]; err != ErrNoError {
-		// TODO: Retry?
+RetryCommitHandler:
+	if attemptsRemaining > 0 {
+		client.coordinatorLock.Lock()
+		delete(client.coordinators, consumerGroup)
+		client.coordinatorLock.Unlock()
+
+		time.Sleep(1 * time.Second)
+		return client.tryCommitOffset(consumerGroup, topic, partitionID, offset, metadata, attemptsRemaining-1)
+	} else {
 		return err
 	}
-
-	return nil
 }
 
 func (client *client) FetchOffset(consumerGroup string, topic string, partitionID int32) (int64, string, error) {
-	broker, err := client.getOffsetLeader(consumerGroup, client.conf.Metadata.Retry.Max)
+	return client.tryFetchOffset(consumerGroup, topic, partitionID, 5)
+}
+
+func (client *client) tryFetchOffset(consumerGroup string, topic string, partitionID int32, attemptsRemaining int) (int64, string, error) {
+	var err error
+
+	broker, err := client.Coordinator(consumerGroup)
 	if err != nil {
 		return -1, "", err
 	}
@@ -355,25 +390,69 @@ func (client *client) FetchOffset(consumerGroup string, topic string, partitionI
 	offsetFetchRequest.AddPartition(topic, partitionID)
 
 	response, err := broker.FetchOffset(offsetFetchRequest)
-	Logger.Println(response)
+
 	if err != nil {
-		// TODO: retry?
+		_ = broker.Close()
+		client.disconnectBroker(broker)
+		goto RetryFetchHandler
+	} else {
+
+		block := response.Blocks[topic][partitionID]
+		err = block.Err
+		switch err {
+		case ErrNoError:
+			return block.Offset, block.Metadata, nil
+
+		case ErrNotCoordinatorForConsumer:
+			goto RetryFetchHandler
+
+		default:
+			Logger.Println("Unexpected error for FetchOffset:", err)
+			return -1, "", err
+		}
+	}
+
+RetryFetchHandler:
+	if attemptsRemaining > 0 {
+		client.coordinatorLock.Lock()
+		delete(client.coordinators, consumerGroup)
+		client.coordinatorLock.Unlock()
+
+		time.Sleep(1 * time.Second)
+		return client.tryFetchOffset(consumerGroup, topic, partitionID, attemptsRemaining-1)
+	} else {
 		return -1, "", err
 	}
-
-	block := response.Blocks[topic][partitionID]
-	if block.Err != ErrNoError {
-		// TODO: retry?
-		return -1, "", block.Err
-	}
-
-	return block.Offset, block.Metadata, nil
 }
 
-func (client *client) getOffsetLeader(consumerGroup string, attemptsRemaining int) (*Broker, error) {
+func (client *client) Coordinator(consumerGroup string) (*Broker, error) {
+	client.coordinatorLock.RLock()
+	coordinator, ok := client.coordinators[consumerGroup]
+	client.coordinatorLock.RUnlock()
+
+	if ok {
+		_ = coordinator.Open(client.conf)
+		return coordinator, nil
+	}
+
+	coordinator, err := client.getCoordinator(consumerGroup, client.conf.Metadata.Retry.Max)
+	if err != nil {
+		return nil, err
+	}
+
+	Logger.Printf("client/coordinator Caching #%d (%s) as coordinator for consumergoup %s.\n", coordinator.ID(), coordinator.Addr(), consumerGroup)
+
+	client.coordinatorLock.Lock()
+	client.coordinators[consumerGroup] = coordinator
+	client.coordinatorLock.Unlock()
+
+	return coordinator, nil
+}
+
+func (client *client) getCoordinator(consumerGroup string, attemptsRemaining int) (*Broker, error) {
 	for broker := client.any(); broker != nil; broker = client.any() {
 
-		Logger.Println("client/coordinator Finding coordinator for consumergoup %s fom %s.\n", consumerGroup, broker.Addr())
+		Logger.Printf("client/coordinator Finding coordinator for consumergoup %s fom %s.\n", consumerGroup, broker.Addr())
 
 		request := new(ConsumerMetadataRequest)
 		request.ConsumerGroup = consumerGroup
@@ -388,19 +467,24 @@ func (client *client) getOffsetLeader(consumerGroup string, attemptsRemaining in
 
 		switch response.Err {
 		case ErrNoError:
-			broker := client.brokers[response.CoordinatorID]
-			if broker == nil {
+			client.metadataLock.RLock()
+			coordinator := client.brokers[response.CoordinatorID]
+			client.metadataLock.RUnlock()
+
+			if coordinator == nil {
+				client.metadataLock.Lock()
 				client.brokers[response.CoordinatorID] = &Broker{
 					id:   response.CoordinatorID,
 					addr: fmt.Sprintf("%s:%d", response.CoordinatorHost, response.CoordinatorPort),
 				}
 
-				broker = client.brokers[response.CoordinatorID]
+				coordinator = client.brokers[response.CoordinatorID]
+				client.metadataLock.Unlock()
 			}
 
-			Logger.Printf("client/coordinator Coordinator for consumergoup %s is ID %d (%s).\n", consumerGroup, broker.ID(), broker.Addr())
-			_ = broker.Open(client.conf)
-			return broker, nil
+			Logger.Printf("client/coordinator Coordinator for consumergoup %s is #%d (%s).\n", consumerGroup, coordinator.ID(), coordinator.Addr())
+			_ = coordinator.Open(client.conf)
+			return coordinator, nil
 
 		case ErrConsumerCoordinatorNotAvailable:
 			continue
@@ -413,9 +497,11 @@ func (client *client) getOffsetLeader(consumerGroup string, attemptsRemaining in
 	Logger.Println("Out of available brokers.")
 
 	if attemptsRemaining > 0 {
-		time.Sleep(client.conf.Metadata.Retry.Backoff)
+		Logger.Printf("client/offsetleader Trying again to find leader for consumer group %s... (%d attempts remaining)\n", consumerGroup, attemptsRemaining)
+
+		time.Sleep(1 * time.Second)
 		client.resurrectDeadBrokers()
-		return client.getOffsetLeader(consumerGroup, attemptsRemaining-1)
+		return client.getCoordinator(consumerGroup, attemptsRemaining-1)
 	}
 
 	return nil, ErrOutOfBrokers
@@ -424,8 +510,8 @@ func (client *client) getOffsetLeader(consumerGroup string, attemptsRemaining in
 // private broker management helpers
 
 func (client *client) disconnectBroker(broker *Broker) {
-	client.lock.Lock()
-	defer client.lock.Unlock()
+	client.metadataLock.Lock()
+	defer client.metadataLock.Unlock()
 
 	if len(client.seedBrokers) > 0 && broker == client.seedBrokers[0] {
 		client.deadSeeds = append(client.deadSeeds, broker)
@@ -440,16 +526,16 @@ func (client *client) disconnectBroker(broker *Broker) {
 }
 
 func (client *client) resurrectDeadBrokers() {
-	client.lock.Lock()
-	defer client.lock.Unlock()
+	client.metadataLock.Lock()
+	defer client.metadataLock.Unlock()
 
 	client.seedBrokers = append(client.seedBrokers, client.deadSeeds...)
 	client.deadSeeds = nil
 }
 
 func (client *client) any() *Broker {
-	client.lock.RLock()
-	defer client.lock.RUnlock()
+	client.metadataLock.RLock()
+	defer client.metadataLock.RUnlock()
 
 	if len(client.seedBrokers) > 0 {
 		_ = client.seedBrokers[0].Open(client.conf)
@@ -479,8 +565,8 @@ const (
 )
 
 func (client *client) cachedMetadata(topic string, partitionID int32) *PartitionMetadata {
-	client.lock.RLock()
-	defer client.lock.RUnlock()
+	client.metadataLock.RLock()
+	defer client.metadataLock.RUnlock()
 
 	partitions := client.metadata[topic]
 	if partitions != nil {
@@ -491,8 +577,8 @@ func (client *client) cachedMetadata(topic string, partitionID int32) *Partition
 }
 
 func (client *client) cachedPartitions(topic string, partitionSet partitionType) []int32 {
-	client.lock.RLock()
-	defer client.lock.RUnlock()
+	client.metadataLock.RLock()
+	defer client.metadataLock.RUnlock()
 
 	partitions, exists := client.cachedPartitionsResults[topic]
 
@@ -522,8 +608,8 @@ func (client *client) setPartitionCache(topic string, partitionSet partitionType
 }
 
 func (client *client) cachedLeader(topic string, partitionID int32) (*Broker, error) {
-	client.lock.RLock()
-	defer client.lock.RUnlock()
+	client.metadataLock.RLock()
+	defer client.metadataLock.RUnlock()
 
 	partitions := client.metadata[topic]
 	if partitions != nil {
@@ -617,8 +703,8 @@ func (client *client) tryRefreshMetadata(topics []string, retriesRemaining int) 
 
 // if no fatal error, returns a list of topics that need retrying due to ErrLeaderNotAvailable
 func (client *client) updateMetadata(data *MetadataResponse) ([]string, error) {
-	client.lock.Lock()
-	defer client.lock.Unlock()
+	client.metadataLock.Lock()
+	defer client.metadataLock.Unlock()
 
 	// For all the brokers we received:
 	// - if it is a new ID, save it
