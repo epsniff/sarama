@@ -3,6 +3,7 @@ package sarama
 import (
 	"fmt"
 	"log"
+	"math"
 	"net"
 	"os"
 	"strings"
@@ -169,6 +170,21 @@ func TestFuncMultiPartitionProduce(t *testing.T) {
 	if err := producer.Close(); err != nil {
 		t.Error(err)
 	}
+}
+
+func TestFuncConsumerOffsetOutOfRange(t *testing.T) {
+	checkKafkaAvailability(t)
+
+	c, err := NewConsumer(kafkaBrokers, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := c.ConsumePartition("single_partition", 0, math.MaxInt64); err != ErrOffsetOutOfRange {
+		t.Error("Expected ErrOffsetOutOfRange, got", err)
+	}
+
+	safeClose(t, c)
 }
 
 func TestFuncClientGetOffsetRange(t *testing.T) {

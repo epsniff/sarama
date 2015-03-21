@@ -18,6 +18,11 @@ func TestConsumerOffsetManual(t *testing.T) {
 	metadataResponse.AddTopicPartition("my_topic", 0, leader.BrokerID(), nil, nil, ErrNoError)
 	seedBroker.Returns(metadataResponse)
 
+	offsetResponse := new(OffsetResponse)
+	offsetResponse.AddTopicPartition("my_topic", 0, 23456) // newest
+	offsetResponse.AddTopicPartition("my_topic", 0, 0)     // oldest
+	leader.Returns(offsetResponse)
+
 	for i := 0; i <= 10; i++ {
 		fetchResponse := new(FetchResponse)
 		fetchResponse.AddMessage("my_topic", 0, nil, ByteEncoder([]byte{0x00, 0x0E}), int64(i+1234))
@@ -61,7 +66,8 @@ func TestConsumerLatestOffset(t *testing.T) {
 	seedBroker.Returns(metadataResponse)
 
 	offsetResponse := new(OffsetResponse)
-	offsetResponse.AddTopicPartition("my_topic", 0, 0x010101)
+	offsetResponse.AddTopicPartition("my_topic", 0, 0x010101) // newest
+	offsetResponse.AddTopicPartition("my_topic", 0, 0x0)      // oldest
 	leader.Returns(offsetResponse)
 
 	fetchResponse := new(FetchResponse)
@@ -101,6 +107,11 @@ func TestConsumerFunnyOffsets(t *testing.T) {
 	metadataResponse.AddTopicPartition("my_topic", 0, leader.BrokerID(), nil, nil, ErrNoError)
 	seedBroker.Returns(metadataResponse)
 
+	offsetResponse := new(OffsetResponse)
+	offsetResponse.AddTopicPartition("my_topic", 0, 23456) // newest
+	offsetResponse.AddTopicPartition("my_topic", 0, 0)     // oldest
+	leader.Returns(offsetResponse)
+
 	fetchResponse := new(FetchResponse)
 	fetchResponse.AddMessage("my_topic", 0, nil, ByteEncoder([]byte{0x00, 0x0E}), int64(1))
 	fetchResponse.AddMessage("my_topic", 0, nil, ByteEncoder([]byte{0x00, 0x0E}), int64(3))
@@ -136,6 +147,16 @@ func TestConsumerRebalancingMultiplePartitions(t *testing.T) {
 	seedBroker := newMockBroker(t, 1)
 	leader0 := newMockBroker(t, 2)
 	leader1 := newMockBroker(t, 3)
+
+	offsetResponse0 := new(OffsetResponse)
+	offsetResponse0.AddTopicPartition("my_topic", 0, 23456) // newest
+	offsetResponse0.AddTopicPartition("my_topic", 0, 0)     // oldest
+	leader0.Returns(offsetResponse0)
+
+	offsetResponse1 := new(OffsetResponse)
+	offsetResponse1.AddTopicPartition("my_topic", 1, 23456) // newest
+	offsetResponse1.AddTopicPartition("my_topic", 1, 0)     // oldest
+	leader1.Returns(offsetResponse1)
 
 	metadataResponse := new(MetadataResponse)
 	metadataResponse.AddBroker(leader0.Addr(), leader0.BrokerID())
@@ -273,6 +294,16 @@ func TestConsumerInterleavedClose(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	offsetResponse0 := new(OffsetResponse)
+	offsetResponse0.AddTopicPartition("my_topic", 0, 23456) // newest
+	offsetResponse0.AddTopicPartition("my_topic", 0, 0)     // oldest
+	leader.Returns(offsetResponse0)
+
+	offsetResponse1 := new(OffsetResponse)
+	offsetResponse1.AddTopicPartition("my_topic", 1, 23456) // newest
+	offsetResponse1.AddTopicPartition("my_topic", 1, 0)     // oldest
+	leader.Returns(offsetResponse1)
+
 	c0, err := master.ConsumePartition("my_topic", 0, 0)
 	if err != nil {
 		t.Fatal(err)
@@ -297,6 +328,44 @@ func TestConsumerInterleavedClose(t *testing.T) {
 	seedBroker.Close()
 }
 
+func TestConsumerOffsetOutOfRange(t *testing.T) {
+	seedBroker := newMockBroker(t, 1)
+	leader := newMockBroker(t, 2)
+
+	metadataResponse := new(MetadataResponse)
+	metadataResponse.AddBroker(leader.Addr(), leader.BrokerID())
+	metadataResponse.AddTopicPartition("my_topic", 0, leader.BrokerID(), nil, nil, ErrNoError)
+	seedBroker.Returns(metadataResponse)
+
+	offsetResponse := new(OffsetResponse)
+	offsetResponse.AddTopicPartition("my_topic", 0, 23456) // newest
+	offsetResponse.AddTopicPartition("my_topic", 0, 12345) // oldest
+
+	master, err := NewConsumer([]string{seedBroker.Addr()}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	leader.Returns(offsetResponse)
+	if _, err := master.ConsumePartition("my_topic", 0, -3); err != ErrOffsetOutOfRange {
+		t.Error("Expected ErrOffsetOutOfRange, got", err)
+	}
+
+	leader.Returns(offsetResponse)
+	if _, err := master.ConsumePartition("my_topic", 0, 100); err != ErrOffsetOutOfRange {
+		t.Error("Expected ErrOffsetOutOfRange, got", err)
+	}
+
+	leader.Returns(offsetResponse)
+	if _, err := master.ConsumePartition("my_topic", 0, 23457); err != ErrOffsetOutOfRange {
+		t.Error("Expected ErrOffsetOutOfRange, got", err)
+	}
+
+	safeClose(t, master)
+	seedBroker.Close()
+	leader.Close()
+}
+
 func TestConsumerBounceWithReferenceOpen(t *testing.T) {
 	seedBroker := newMockBroker(t, 1)
 	leader := newMockBroker(t, 2)
@@ -316,6 +385,16 @@ func TestConsumerBounceWithReferenceOpen(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+
+	offsetResponse0 := new(OffsetResponse)
+	offsetResponse0.AddTopicPartition("my_topic", 0, 23456) // newest
+	offsetResponse0.AddTopicPartition("my_topic", 0, 0)     // oldest
+	leader.Returns(offsetResponse0)
+
+	offsetResponse1 := new(OffsetResponse)
+	offsetResponse1.AddTopicPartition("my_topic", 1, 23456) // newest
+	offsetResponse1.AddTopicPartition("my_topic", 1, 0)     // oldest
+	leader.Returns(offsetResponse1)
 
 	c0, err := master.ConsumePartition("my_topic", 0, 0)
 	if err != nil {
