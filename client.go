@@ -371,42 +371,54 @@ func (client *client) FetchOffset(consumerGroup string, topic string, partitionI
 }
 
 func (client *client) getOffsetLeader(consumerGroup string, attemptsRemaining int) (*Broker, error) {
-	request := new(ConsumerMetadataRequest)
-	request.ConsumerGroup = consumerGroup
-	response, err := client.seedBroker.GetConsumerMetadata(request)
+	for broker := client.any(); broker != nil; broker = client.any() {
 
-	if err != nil {
-		// TODO: use another seedBroker?
-		goto RetryHandler
-	}
+		Logger.Println("client/coordinator Finding coordinator for consumergoup %s fom %s.\n", consumerGroup, broker.Addr())
 
-	switch response.Err {
-	case ErrNoError:
-		broker := client.brokers[response.CoordinatorID]
-		if broker == nil {
-			client.brokers[response.CoordinatorID] = &Broker{
-				id:   response.CoordinatorID,
-				addr: fmt.Sprintf("%s:%d", response.CoordinatorHost, response.CoordinatorPort),
+		request := new(ConsumerMetadataRequest)
+		request.ConsumerGroup = consumerGroup
+
+		response, err := broker.GetConsumerMetadata(request)
+
+		if err != nil {
+			_ = broker.Close()
+			client.disconnectBroker(broker)
+			continue
+		}
+
+		switch response.Err {
+		case ErrNoError:
+			broker := client.brokers[response.CoordinatorID]
+			if broker == nil {
+				client.brokers[response.CoordinatorID] = &Broker{
+					id:   response.CoordinatorID,
+					addr: fmt.Sprintf("%s:%d", response.CoordinatorHost, response.CoordinatorPort),
+				}
+
+				broker = client.brokers[response.CoordinatorID]
 			}
 
-			broker = client.brokers[response.CoordinatorID]
-		}
-		_ = broker.Open(client.conf)
-		return broker, nil
+			Logger.Printf("client/coordinator Coordinator for consumergoup %s is ID %d (%s).\n", consumerGroup, broker.ID(), broker.Addr())
+			_ = broker.Open(client.conf)
+			return broker, nil
 
-	case ErrConsumerCoordinatorNotAvailable:
-		goto RetryHandler
-	default:
-		return nil, response.Err
+		case ErrConsumerCoordinatorNotAvailable:
+			continue
+
+		default:
+			return nil, response.Err
+		}
 	}
 
-RetryHandler:
+	Logger.Println("Out of available brokers.")
+
 	if attemptsRemaining > 0 {
 		time.Sleep(client.conf.Metadata.Retry.Backoff)
+		client.resurrectDeadBrokers()
 		return client.getOffsetLeader(consumerGroup, attemptsRemaining-1)
-	} else {
-		return nil, err
 	}
+
+	return nil, ErrOutOfBrokers
 }
 
 // private broker management helpers

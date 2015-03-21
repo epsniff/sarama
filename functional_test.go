@@ -51,14 +51,14 @@ func checkKafkaAvailability(t *testing.T) {
 }
 
 func checkKafkaVersion(t *testing.T, requiredVersion string) {
-	kafkaVersion := os.Getenv("KAFKA_VERSION")
-	if kafkaVersion == "" {
+	availableVersion := os.Getenv("KAFKA_VERSION")
+	if availableVersion == "" {
 		t.Logf("No KAFKA_VERSION set. This tests requires Kafka version %s or higher. Continuing...", requiredVersion)
 	} else {
-		available := parseKafkaVersion(kafkaVersion)
+		available := parseKafkaVersion(availableVersion)
 		required := parseKafkaVersion(requiredVersion)
 		if !available.satisfies(required) {
-			t.Skipf("Kafka version %s is required for this test; you have %s. Skipping...", requiredVersion, kafkaVersion)
+			t.Skipf("Kafka version %s is required for this test; you have %s. Skipping...", requiredVersion, availableVersion)
 		}
 	}
 }
@@ -88,32 +88,5 @@ func parseKafkaVersion(version string) kafkaVersion {
 		nr, _ := strconv.Atoi(number)
 		result = append(result, nr)
 	}
-
 	return result
-}
-
-func TestFuncOffsetManagement(t *testing.T) {
-	c, err := NewClient(kafkaBrokers, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	if err := c.(*client).CommitOffset("testing_123", "multi_partition", 1, 123, "Hello world"); err != nil {
-		t.Fatal(err)
-	}
-
-	offset, metadata, err := c.(*client).FetchOffset("testing_123", "multi_partition", 1)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	if offset != 123 {
-		t.Error("Expected offset 123, got", offset)
-	}
-
-	if metadata != "Hello world" {
-		t.Error("Expected metadata 'Hello world', got", metadata)
-	}
-
-	safeClose(t, c)
 }
