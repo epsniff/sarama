@@ -319,6 +319,88 @@ func (client *client) GetOffset(topic string, partitionID int32, time int64) (in
 	return block.Offsets[0], nil
 }
 
+func (client *client) CommitOffset(consumerGroup string, topic string, partitionID int32, offset int64, metadata string) error {
+	broker, err := client.getOffsetLeader(consumerGroup, client.conf.Metadata.Retry.Max)
+	if err != nil {
+		return err
+	}
+
+	offsetCommitRequest := new(OffsetCommitRequest)
+	offsetCommitRequest.ConsumerGroup = consumerGroup
+	offsetCommitRequest.AddBlock(topic, partitionID, offset, ReceiveTime, metadata)
+
+	response, err := broker.CommitOffset(offsetCommitRequest)
+	if err != nil {
+		// TODO: retry?
+		return err
+	}
+
+	if err := response.Errors[topic][partitionID]; err != ErrNoError {
+		// TODO: Retry?
+		return err
+	}
+
+	return nil
+}
+
+func (client *client) FetchOffset(consumerGroup string, topic string, partitionID int32) (int64, string, error) {
+	broker, err := client.getOffsetLeader(consumerGroup, client.conf.Metadata.Retry.Max)
+	if err != nil {
+		return -1, "", err
+	}
+
+	offsetFetchRequest := new(OffsetFetchRequest)
+	offsetFetchRequest.ConsumerGroup = consumerGroup
+	offsetFetchRequest.AddPartition(topic, partitionID)
+
+	response, err := broker.FetchOffset(offsetFetchRequest)
+	Logger.Println(response)
+	if err != nil {
+		// TODO: retry?
+		return -1, "", err
+	}
+
+	block := response.Blocks[topic][partitionID]
+	if block.Err != ErrNoError {
+		// TODO: retry?
+		return -1, "", block.Err
+	}
+
+	return block.Offset, block.Metadata, nil
+}
+
+func (client *client) getOffsetLeader(consumerGroup string, attemptsRemaining int) (*Broker, error) {
+	request := new(ConsumerMetadataRequest)
+	request.ConsumerGroup = consumerGroup
+	response, err := client.seedBroker.GetConsumerMetadata(request)
+
+	if err != nil {
+		// TODO: use another seedBroker?
+		goto RetryHandler
+	}
+
+	switch response.Err {
+	case ErrNoError:
+		// TODO: register new brokers
+		broker := client.brokers[response.CoordinatorID]
+		_ = broker.Open(client.conf)
+		return broker, nil
+
+	case ErrConsumerCoordinatorNotAvailable:
+		goto RetryHandler
+	default:
+		return nil, response.Err
+	}
+
+RetryHandler:
+	if attemptsRemaining > 0 {
+		time.Sleep(client.conf.Metadata.Retry.Backoff)
+		return client.getOffsetLeader(consumerGroup, attemptsRemaining-1)
+	} else {
+		return nil, err
+	}
+}
+
 // private broker management helpers
 
 func (client *client) disconnectBroker(broker *Broker) {
