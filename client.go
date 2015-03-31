@@ -435,7 +435,7 @@ func (client *client) Coordinator(consumerGroup string) (*Broker, error) {
 		return coordinator, nil
 	}
 
-	coordinator, err := client.getCoordinator(consumerGroup, 10)
+	coordinator, err := client.refreshCoordinator(consumerGroup, 10)
 	if err != nil {
 		return nil, err
 	}
@@ -449,7 +449,7 @@ func (client *client) Coordinator(consumerGroup string) (*Broker, error) {
 	return coordinator, nil
 }
 
-func (client *client) getCoordinator(consumerGroup string, attemptsRemaining int) (*Broker, error) {
+func (client *client) refreshCoordinator(consumerGroup string, attemptsRemaining int) (*Broker, error) {
 	for broker := client.any(); broker != nil; broker = client.any() {
 
 		Logger.Printf("client/coordinator Finding coordinator for consumergoup %s fom %s.\n", consumerGroup, broker.Addr())
@@ -501,7 +501,7 @@ func (client *client) getCoordinator(consumerGroup string, attemptsRemaining int
 
 		time.Sleep(1 * time.Second)
 		client.resurrectDeadBrokers()
-		return client.getCoordinator(consumerGroup, attemptsRemaining-1)
+		return client.refreshCoordinator(consumerGroup, attemptsRemaining-1)
 	}
 
 	return nil, ErrOutOfBrokers
