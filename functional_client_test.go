@@ -79,7 +79,7 @@ func TestFuncClientOffsetManagement(t *testing.T) {
 	}
 
 	if metadata != "Hello world" {
-		t.Logf("Expected metadata 'Hello world', got '%s'", metadata)
+		t.Errorf("Expected metadata 'Hello world', got '%s'", metadata)
 	}
 
 	safeClose(t, c)

@@ -336,9 +336,8 @@ func (client *client) tryCommitOffset(consumerGroup string, topic string, partit
 		return err
 	}
 
-	Logger.Println("Committing offset to coordinator %d (%s) ", broker.ID(), broker.Addr())
-
 	offsetCommitRequest := new(OffsetCommitRequest)
+	offsetCommitRequest.Version = 1
 	offsetCommitRequest.ConsumerGroup = consumerGroup
 	offsetCommitRequest.AddBlock(topic, partitionID, offset, ReceiveTime, metadata)
 
@@ -386,6 +385,7 @@ func (client *client) tryFetchOffset(consumerGroup string, topic string, partiti
 	}
 
 	offsetFetchRequest := new(OffsetFetchRequest)
+	offsetFetchRequest.Version = 1
 	offsetFetchRequest.ConsumerGroup = consumerGroup
 	offsetFetchRequest.AddPartition(topic, partitionID)
 
